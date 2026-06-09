@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Layer Lens</title>
+  <!--
+    popup.css   – all visual styling (dark theme, layout, result cards).
+    popup.js    – loaded at the bottom of <body> so the DOM is fully parsed
+                  before the script runs; no DOMContentLoaded listener needed.
+  -->
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <!-- ── Header bar ──────────────────────────────────────────────────────── -->
+  <!--
+    Contains the extension name and a magnifying-glass SVG icon.
+    The SVG is inline so it inherits the parent's CSS colour (no separate
+    image file needed, and it scales cleanly on high-DPI screens).
+  -->
+  <div class="header">
+    <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         aria-hidden="true">
+      <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+    </svg>
+    <span>Layer Lens</span>
+  </div>
+
+  <!-- ── Event count badges ──────────────────────────────────────────────── -->
+  <!--
+    Shows how many dataLayer pushes and GA4 events have been captured since
+    the page loaded. Updated by popup.js → refreshCounts() on open and after
+    each search.
+    Initial text "–" indicates the count hasn't been fetched yet.
+  -->
+  <div class="counts" id="counts" aria-live="polite">
+    <!-- dataLayer stat card -->
+    <div class="count-card">
+      <span class="count-num" id="dl-count">–</span>
+      <span class="count-label">dataLayer pushes</span>
+    </div>
+    <!-- Vertical divider between the two cards -->
+    <div class="count-divider"></div>
+    <!-- GA4 stat card -->
+    <div class="count-card">
+      <span class="count-num" id="ga4-count">–</span>
+      <span class="count-label">GA4 events captured</span>
+    </div>
+  </div>
+
+  <!-- ── Search input row ────────────────────────────────────────────────── -->
+  <!--
+    The text field is pre-filled by popup.js with any highlighted text on the
+    page or a term queued by the right-click context menu.
+    autocomplete="off" prevents browser autofill from interfering.
+    spellcheck="false" avoids red underlines on product IDs / technical values.
+    Pressing Enter in the field triggers the same runSearch() as the button.
+  -->
+  <div class="search-row">
+    <input
+      type="text"
+      id="search-input"
+      placeholder="Search term…"
+      autocomplete="off"
+      spellcheck="false"
+      aria-label="Search term"
+    />
+    <button id="search-btn" class="btn-primary" aria-label="Run search">Search</button>
+  </div>
+
+  <!-- ── Source selection checkboxes ─────────────────────────────────────── -->
+  <!--
+    The user can restrict the search to dataLayer only, GA4 only, or both.
+    At least one must be checked at all times — popup.js enforces this by
+    re-checking a box if the user tries to uncheck the last one.
+  -->
+  <div class="sources-row" role="group" aria-label="Sources to search">
+    <label class="checkbox-label">
+      <input type="checkbox" id="chk-dl" checked>
+      <span>DataLayer</span>
+    </label>
+    <label class="checkbox-label">
+      <input type="checkbox" id="chk-ga4" checked>
+      <span>GA4 Events</span>
+    </label>
+  </div>
+
+  <!-- ── Settings row ───────────────────────────────────────────────────── -->
+  <!--
+    Houses extension-level settings. Each setting is a labelled toggle switch.
+    The toggle state is persisted in chrome.storage.local so it survives popup
+    closes and browser restarts. content.js reads the same key on load and
+    reacts in real-time to storage changes via chrome.storage.onChanged.
+  -->
+  <div class="settings-row">
+    <label class="toggle-row" for="chk-tooltip">
+      <span class="toggle-text">
+        <span class="toggle-title">Hover-to-search tooltip</span>
+        <span class="toggle-desc">Show a "Search" button when you select text on the page</span>
+      </span>
+      <!-- The actual <input> is visually hidden; the .toggle-track span is styled -->
+      <span class="toggle-switch">
+        <input type="checkbox" id="chk-tooltip" checked role="switch"
+               aria-label="Enable hover-to-search tooltip">
+        <span class="toggle-track"></span>
+      </span>
+    </label>
+  </div>
+
+  <!-- ── Status bar ──────────────────────────────────────────────────────── -->
+  <!--
+    Used to display informational messages (info), errors (error), or
+    "no results" (none). Hidden by default via the "hidden" CSS class.
+    popup.js toggles its class to show/hide and sets the appropriate style.
+    aria-live="polite" announces changes to screen readers without interrupting.
+  -->
+  <div id="status" class="status hidden" role="status" aria-live="polite"></div>
+
+  <!-- ── Results container ───────────────────────────────────────────────── -->
+  <!--
+    Empty on load; populated by popup.js → renderResults() after a search.
+    Each matched event becomes a collapsible "result card" appended here.
+    overflow-y: auto (set in CSS) makes this section scrollable when there
+    are many results, while the header/controls remain fixed at the top.
+  -->
+  <div id="results" class="results" aria-live="polite"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

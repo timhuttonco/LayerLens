@@ -1,0 +1,12 @@
+# macOS metadata
+.DS_Store
+
+# Node (generate_icons.js dependency, not needed in production)
+node_modules/
+
+# Python background removal tooling — not part of the extension
+*.onnx
+__pycache__/
+
+# Local dev notes you don't want public
+*.local.*
