@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Layer Lens",
-  "version": "1.0",
+  "version": "1.1.0",
   "description": "Search GTM dataLayer and GA4 events for any value in real time.",
   "permissions": ["activeTab", "scripting", "contextMenus", "storage"],
   "host_permissions": ["<all_urls>"],
