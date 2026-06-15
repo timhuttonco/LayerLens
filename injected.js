@@ -149,9 +149,20 @@
   // Wrap any existing gtag before overwriting it.
   const _originalGtag = window.gtag;
 
-  window.gtag = function (...args) {
-    captureGtagCall(args);
-    if (typeof _originalGtag === 'function') return _originalGtag.apply(this, args);
+  // Use a classic function (not arrow/rest) so `arguments` is the native
+  // Arguments object — identical to the standard gtag snippet:
+  //   function gtag(){dataLayer.push(arguments);}
+  // GTM's queue processor distinguishes Arguments objects from plain arrays,
+  // so the fallback must push `arguments` directly, not a rest-params array.
+  window.gtag = function () {
+    captureGtagCall([].slice.call(arguments));
+    if (typeof _originalGtag === 'function') {
+      return _originalGtag.apply(this, arguments);
+    } else {
+      // No real gtag loaded yet — replicate standard behaviour so GTM still
+      // receives the call and can fire the GA4 network hit.
+      (window.dataLayer = window.dataLayer || []).push(arguments);
+    }
   };
 
   // Watch for gtag.js loading asynchronously and replacing window.gtag.
@@ -163,9 +174,9 @@
     const current = window.gtag;
     if (current && current !== _lastGtag) {
       const captured = current;
-      _lastGtag = window.gtag = function (...args) {
-        captureGtagCall(args);
-        return captured.apply(this, args);
+      _lastGtag = window.gtag = function () {
+        captureGtagCall([].slice.call(arguments));
+        return captured.apply(this, arguments);
       };
     }
   }, 200);
