@@ -89,21 +89,21 @@
     wrapDataLayer(window.dataLayer);
   }
 
-  // Intercept future assignments to window.dataLayer (some SPAs reset it).
-  let _dataLayer = window.dataLayer;
-  Object.defineProperty(window, 'dataLayer', {
-    get() { return _dataLayer; },
-    set(newVal) {
-      _dataLayer = newVal;
-      if (Array.isArray(newVal)) {
-        newVal.forEach(item => {
-          try { DL_EVENTS.push({ timestamp: Date.now(), data: deepClone(item) }); } catch (_) {}
-        });
-        wrapDataLayer(newVal);
-      }
-    },
-    configurable: true,
-  });
+  // Watch for SPAs that reset window.dataLayer to a new array by polling on a
+  // short interval. We previously used Object.defineProperty here, but that
+  // conflicted with GTM's own internal queue processor which also inspects the
+  // property descriptor — causing GA4 network hits to never fire.
+  let _lastDataLayer = window.dataLayer;
+  setInterval(() => {
+    const current = window.dataLayer;
+    if (current && current !== _lastDataLayer && Array.isArray(current)) {
+      _lastDataLayer = current;
+      current.forEach(item => {
+        try { DL_EVENTS.push({ timestamp: Date.now(), data: deepClone(item) }); } catch (_) {}
+      });
+      wrapDataLayer(current);
+    }
+  }, 500);
 
   // ─────────────────────────────────────────────────────────────────────────
   // 2 & 3. gtag() interception — config (Measurement ID) + events
