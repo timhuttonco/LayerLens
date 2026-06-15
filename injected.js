@@ -154,18 +154,21 @@
     if (typeof _originalGtag === 'function') return _originalGtag.apply(this, args);
   };
 
-  // Also intercept future assignments to window.gtag (async-loaded gtag.js).
-  let _gtagRef = window.gtag;
-  Object.defineProperty(window, 'gtag', {
-    get() { return _gtagRef; },
-    set(fn) {
-      _gtagRef = function (...args) {
+  // Watch for gtag.js loading asynchronously and replacing window.gtag.
+  // We previously used Object.defineProperty here, but that conflicted with
+  // GTM/gtag.js internals which inspect the property descriptor of window.gtag
+  // during initialisation — causing GA4 network hits to never fire.
+  let _lastGtag = window.gtag;
+  setInterval(() => {
+    const current = window.gtag;
+    if (current && current !== _lastGtag) {
+      const captured = current;
+      _lastGtag = window.gtag = function (...args) {
         captureGtagCall(args);
-        return fn.apply(this, args);
+        return captured.apply(this, args);
       };
-    },
-    configurable: true,
-  });
+    }
+  }, 200);
 
   // ─────────────────────────────────────────────────────────────────────────
   // 4–6. Network-level GA4 hit interception
