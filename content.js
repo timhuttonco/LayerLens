@@ -66,6 +66,7 @@ let requestCounter = 0;
  * '__dli_request__' CustomEvent. Resolves the pending Promise for this id.
  */
 window.addEventListener('__dli_response__', e => {
+  if (!e.detail) return;
   const { id, dataLayer, ga4 } = e.detail;
   const resolve = pendingRequests[id];
   if (resolve) {
@@ -80,6 +81,7 @@ window.addEventListener('__dli_response__', e => {
  * a numeric id because only one count request can be in-flight at a time.
  */
 window.addEventListener('__dli_count__', e => {
+  if (!e.detail) return;
   const resolve = pendingRequests['__count__'];
   if (resolve) {
     delete pendingRequests['__count__'];
@@ -427,18 +429,26 @@ function hideTooltip() {
  *
  * @param {MouseEvent} e
  */
+function looksLikeEmail(text) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(text.trim());
+}
+
 function onTooltipClick(e) {
   e.preventDefault();
-  e.stopPropagation(); // don't let the click bubble and clear the selection
+  e.stopPropagation();
 
   const text = window.getSelection()?.toString()?.trim();
   if (!text) return;
 
-  // Hide immediately — the popup is about to open.
   hideTooltip();
 
-  // Ask background.js to store the term and open the popup.
-  chrome.runtime.sendMessage({ type: 'OPEN_POPUP_WITH_TERM', term: text });
+  // If the selected text looks like an email, open the popup in email-check mode
+  // so both the Email PII tab and Events tab are pre-filled and searched.
+  if (looksLikeEmail(text)) {
+    chrome.runtime.sendMessage({ type: 'OPEN_POPUP_WITH_EMAIL', email: text });
+  } else {
+    chrome.runtime.sendMessage({ type: 'OPEN_POPUP_WITH_TERM', term: text });
+  }
 }
 
 // ── Selection event listeners ─────────────────────────────────────────────────

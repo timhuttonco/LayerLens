@@ -10,3 +10,7 @@ __pycache__/
 
 # Local dev notes you don't want public
 *.local.*
+
+# Dev icons and prod backups — never commit these
+icons/*-dev.png
+icons/*-prod.png

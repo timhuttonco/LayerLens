@@ -1,228 +1,152 @@
-/**
- * popup.js — Extension popup UI controller
- *
- * Loaded by popup.html when the user opens the extension popup. Handles:
- *   • Pre-filling the search box with highlighted text or a queued context-menu term.
- *   • Restoring the last search term and source checkboxes from persistent storage.
- *   • Running searches via content.js → injected.js and rendering the results.
- *   • Displaying live counts of captured dataLayer and GA4 events.
- *   • UI state (loading, error, empty, results).
- */
-
 'use strict';
 
 // ── DOM references ────────────────────────────────────────────────────────────
 
-/** Text input where the user types (or pastes) their search term. */
-const searchInput = document.getElementById('search-input');
-
-/** The "Search" button that triggers runSearch(). */
-const searchBtn   = document.getElementById('search-btn');
-
-/** Checkbox to include the GTM dataLayer in the search. */
-const chkDL       = document.getElementById('chk-dl');
-
-/** Checkbox to include GA4 events in the search. */
-const chkGA4      = document.getElementById('chk-ga4');
-
-/** Status bar element for informational / error / no-results messages. */
-const statusEl    = document.getElementById('status');
-
-/** Container element into which result cards are rendered. */
-const resultsEl   = document.getElementById('results');
-
-/** Number span inside the dataLayer stat card. */
-const dlCountEl   = document.getElementById('dl-count');
-
-/** Number span inside the GA4 stat card. */
-const ga4CountEl  = document.getElementById('ga4-count');
-
-/** Toggle checkbox that enables/disables the in-page hover-to-search tooltip. */
+const searchInput     = document.getElementById('search-input');
+const searchBtn       = document.getElementById('search-btn');
+const chkDL           = document.getElementById('chk-dl');
+const chkGA4          = document.getElementById('chk-ga4');
+const statusEl        = document.getElementById('status');
+const resultsEl       = document.getElementById('results');
+const dlCountEl       = document.getElementById('dl-count');
+const ga4CountEl      = document.getElementById('ga4-count');
 const tooltipToggleEl = document.getElementById('chk-tooltip');
 
-// ── Persistent storage ────────────────────────────────────────────────────────
+const tabEventsBtnEl  = document.getElementById('tab-events-btn');
+const tabEmailBtnEl   = document.getElementById('tab-email-btn');
+const panelEventsEl   = document.getElementById('panel-events');
+const panelEmailEl    = document.getElementById('panel-email');
 
-/**
- * The key used in chrome.storage.local to save and restore the last search.
- * chrome.storage.local survives browser restarts, making it the right choice
- * here (unlike session storage which clears when the browser closes).
- */
+const piiEmailInput   = document.getElementById('pii-email');
+const piiBtnEl        = document.getElementById('pii-btn');
+const chkPiiDL        = document.getElementById('chk-pii-dl');
+const chkPiiGA4       = document.getElementById('chk-pii-ga4');
+const piiStatusEl     = document.getElementById('pii-status');
+const piiResultsEl    = document.getElementById('pii-results');
+
+// ── Storage keys ──────────────────────────────────────────────────────────────
+
 const LAST_SEARCH_KEY    = 'lastSearch';
-
-/**
- * The key used in chrome.storage.local to persist the hover-to-search tooltip
- * preference. content.js reads this same key on load and reacts to changes via
- * chrome.storage.onChanged, so there is no need to send a runtime message.
- */
 const TOOLTIP_ENABLED_KEY = 'tooltipEnabled';
+const LAST_PII_EMAIL_KEY  = 'lastPiiEmail';
 
-/**
- * Saves the most recently executed search term and source checkbox state to
- * chrome.storage.local so it can be restored the next time the popup opens.
- *
- * Stored shape: { term: string, sources: string[] }
- * e.g. { term: "5061088861087_BQ", sources: ["dataLayer", "ga4"] }
- *
- * @param {string}   term    - The search term that was just executed.
- * @param {string[]} sources - Active sources, e.g. ['dataLayer', 'ga4'].
- */
+// ── Tab switching ─────────────────────────────────────────────────────────────
+
+function switchTab(name) {
+  const isEvents = name === 'events';
+  panelEventsEl.hidden = !isEvents;
+  panelEmailEl.hidden  = isEvents;
+  tabEventsBtnEl.classList.toggle('active', isEvents);
+  tabEmailBtnEl.classList.toggle('active', !isEvents);
+  tabEventsBtnEl.setAttribute('aria-selected', isEvents);
+  tabEmailBtnEl.setAttribute('aria-selected', !isEvents);
+}
+
+tabEventsBtnEl.addEventListener('click', () => switchTab('events'));
+tabEmailBtnEl.addEventListener('click',  () => switchTab('email'));
+
+// ── Persistent storage helpers ────────────────────────────────────────────────
+
 function saveLastSearch(term, sources) {
   chrome.storage.local.set({ [LAST_SEARCH_KEY]: { term, sources } });
 }
 
-/**
- * Reads the last saved search from chrome.storage.local.
- * Returns null if nothing has been saved yet (first use).
- *
- * @returns {Promise<{term: string, sources: string[]}|null>}
- */
 function loadLastSearch() {
   return new Promise(resolve => {
-    chrome.storage.local.get(LAST_SEARCH_KEY, data => {
-      resolve(data[LAST_SEARCH_KEY] || null);
-    });
+    chrome.storage.local.get(LAST_SEARCH_KEY, data => resolve(data[LAST_SEARCH_KEY] || null));
   });
 }
 
-/**
- * Applies a saved search state to the UI — restores the term in the input
- * and ticks/unticks the source checkboxes to match the saved selection.
- *
- * Always ensures at least one checkbox ends up checked (safety guard).
- *
- * @param {{term: string, sources: string[]}} saved - Saved search state.
- */
 function applySavedSearch(saved) {
   searchInput.value = saved.term;
   chkDL.checked     = saved.sources.includes('dataLayer');
   chkGA4.checked    = saved.sources.includes('ga4');
+  if (!chkDL.checked && !chkGA4.checked) chkDL.checked = chkGA4.checked = true;
+}
 
-  // Guard: if somehow both ended up unchecked, enable both.
-  if (!chkDL.checked && !chkGA4.checked) {
-    chkDL.checked = chkGA4.checked = true;
-  }
+function loadLastPiiEmail() {
+  return new Promise(resolve => {
+    chrome.storage.local.get(LAST_PII_EMAIL_KEY, data => resolve(data[LAST_PII_EMAIL_KEY] || ''));
+  });
 }
 
 // ── Tooltip preference ────────────────────────────────────────────────────────
 
-/**
- * Reads the saved tooltip preference from chrome.storage.local and sets the
- * toggle checkbox to match. Defaults to `true` (enabled) if the key has never
- * been written (i.e. first install).
- */
 function loadTooltipPreference() {
   chrome.storage.local.get(TOOLTIP_ENABLED_KEY, data => {
-    // If the key is absent (undefined), fall back to true — on by default.
-    const enabled = data[TOOLTIP_ENABLED_KEY] !== false;
-    tooltipToggleEl.checked = enabled;
+    tooltipToggleEl.checked = data[TOOLTIP_ENABLED_KEY] !== false;
   });
 }
 
-/**
- * Listens for changes to the tooltip toggle and persists the new value to
- * chrome.storage.local. content.js listens to chrome.storage.onChanged so it
- * reacts immediately — no separate runtime message is required.
- */
 tooltipToggleEl.addEventListener('change', () => {
   chrome.storage.local.set({ [TOOLTIP_ENABLED_KEY]: tooltipToggleEl.checked });
 });
 
+// ── Email helper ──────────────────────────────────────────────────────────────
+
+function looksLikeEmail(text) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(text.trim());
+}
+
 // ── Initialisation ────────────────────────────────────────────────────────────
 
-/**
- * Runs once when the popup opens.
- *
- * Pre-fill priority (highest → lowest):
- *   1. A term stored by background.js from a right-click context menu action
- *      or from the in-page selection tooltip button.
- *   2. Text currently selected (highlighted) on the active tab.
- *   3. The last search term and source state from chrome.storage.local.
- *   4. Empty — user types their own term.
- *
- * After pre-filling, the search is run automatically so the user sees results
- * immediately without having to press a button.
- */
 async function init() {
-  // Notify background.js we're open; it replies with any pending search term
-  // queued from a right-click context menu or an in-page tooltip button click.
   const bg = await chromeMessage({ type: 'POPUP_OPENED' });
 
-  if (bg?.pendingSearch?.term) {
-    // Case 1: term was explicitly queued from outside the popup.
-    // Don't restore checkbox state here — the user's active source selection
-    // from the last search still applies.
+  if (bg?.pendingSearch?.email) {
+    // Tooltip clicked on an email address — pre-fill both panels and run both.
+    const email = bg.pendingSearch.email;
+    piiEmailInput.value = email;
+    searchInput.value   = email;
+    switchTab('email');
+    // Run both in parallel; email tab is visible so its results appear first.
+    runEmailCheck();
+    runSearch();
+
+  } else if (bg?.pendingSearch?.term) {
     searchInput.value = bg.pendingSearch.term;
-
-  } else {
-    // Case 2: try to read whatever text is highlighted on the active tab right now.
-    const sel = await contentMessage({ type: 'GET_SELECTION' });
-
-    if (sel?.text) {
-      searchInput.value = sel.text;
-    } else {
-      // Case 3: no contextual term available — restore the last saved search,
-      // including the source checkbox state.
-      const last = await loadLastSearch();
-      if (last) applySavedSearch(last);
+    // If the queued term looks like an email, silently pre-fill the email tab too.
+    if (looksLikeEmail(bg.pendingSearch.term)) {
+      piiEmailInput.value = bg.pendingSearch.term;
     }
+  } else {
+    const last = await loadLastSearch();
+    if (last) applySavedSearch(last);
   }
 
-  // Restore the tooltip toggle to its last-saved state.
-  loadTooltipPreference();
+  // Restore last-used PII email (if not already filled above).
+  if (!piiEmailInput.value) {
+    piiEmailInput.value = await loadLastPiiEmail();
+  }
 
-  // Show live event counts while the user reads the UI.
+  loadTooltipPreference();
   refreshCounts();
 
-  // Auto-search whenever a term is present so the user sees results immediately.
   if (searchInput.value.trim()) runSearch();
 }
 
-/**
- * Asks content.js (→ injected.js) for the current number of captured events
- * and updates the count badges in the header bar.
- */
+// ── Counts ────────────────────────────────────────────────────────────────────
+
 async function refreshCounts() {
   const resp = await contentMessage({ type: 'GET_COUNT' });
   const c = resp?.counts;
   if (c) {
-    // Write the bare number — the static HTML label (e.g. "dataLayer pushes")
-    // is already in the .count-label span below it.
     dlCountEl.textContent  = c.dl;
     ga4CountEl.textContent = c.ga4;
   }
 }
 
-// ── Search ────────────────────────────────────────────────────────────────────
+// ── Events search ─────────────────────────────────────────────────────────────
 
-/**
- * Reads the search term and selected sources, sends a SEARCH message to
- * content.js, waits for results, then delegates to renderResults().
- *
- * Guards against:
- *   • Empty search term.
- *   • No sources selected (at least one checkbox must be checked).
- *   • content.js not responding (e.g. on a chrome:// page).
- *
- * On success, saves the term and source state to chrome.storage.local so
- * the next popup open can restore it automatically.
- */
 async function runSearch() {
   const term = searchInput.value.trim();
-  if (!term) {
-    showStatus('Type a search term above.', 'info');
-    return;
-  }
+  if (!term) { showStatus('Type a search term above.', 'info'); return; }
 
-  // Collect which sources to search based on checkbox state.
   const sources = [];
   if (chkDL.checked)  sources.push('dataLayer');
   if (chkGA4.checked) sources.push('ga4');
-  if (!sources.length) {
-    showStatus('Select at least one source.', 'info');
-    return;
-  }
+  if (!sources.length) { showStatus('Select at least one source.', 'info'); return; }
 
-  // Show loading state.
   searchBtn.disabled    = true;
   searchBtn.textContent = 'Searching…';
   hideStatus();
@@ -230,125 +154,165 @@ async function runSearch() {
 
   const resp = await contentMessage({ type: 'SEARCH', term, sources });
 
-  // Restore button regardless of outcome.
   searchBtn.disabled    = false;
   searchBtn.textContent = 'Search';
 
-  if (!resp?.ok) {
-    // content.js didn't respond — likely because the extension isn't injected
-    // on this page (e.g. chrome:// URLs, extension pages, or new tab).
-    showStatus('Could not reach the page. Try reloading.', 'error');
-    return;
-  }
+  if (!resp?.ok) { showStatus('Could not reach the page. Try reloading.', 'error'); return; }
 
-  // Persist this search so the next popup open can restore it automatically.
   saveLastSearch(term, sources);
-
   renderResults(resp.results, term);
-
-  // Refresh counts in case new events arrived during the search.
   refreshCounts();
 }
 
-// ── Rendering ─────────────────────────────────────────────────────────────────
+// ── Email PII check ───────────────────────────────────────────────────────────
 
-/**
- * Renders the search results object returned by injected.js into the results
- * container. Groups results under "DataLayer" and "GA4 Events" section headings.
- *
- * If there are no matches at all, shows a status message instead.
- *
- * @param {{dataLayer: Array|null, ga4: Array|null}} results - Search results from injected.js.
- * @param {string} term - The search term (used in the "no results" message).
- */
-function renderResults({ dataLayer, ga4 }, term) {
-  const dlHits  = dataLayer || [];
-  const ga4Hits = ga4 || [];
-  const total   = dlHits.length + ga4Hits.length;
+async function sha256hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
-  if (!total) {
-    showStatus(`No matches for "${esc(term)}" in selected sources.`, 'none');
+function mergeResults(base, incoming) {
+  const seen = new Set(base.map(r => r.index));
+  (incoming || []).forEach(r => { if (!seen.has(r.index)) { seen.add(r.index); base.push(r); } });
+}
+
+async function runEmailCheck() {
+  const email = piiEmailInput.value.trim();
+  if (!email) { showPiiStatus('Enter an email address to check.', 'info'); return; }
+
+  piiBtnEl.disabled    = true;
+  piiBtnEl.textContent = 'Checking…';
+  hidePiiStatus();
+  piiResultsEl.innerHTML = '';
+
+  const sources = [];
+  if (chkPiiDL.checked)  sources.push('dataLayer');
+  if (chkPiiGA4.checked) sources.push('ga4');
+  if (!sources.length) {
+    showPiiStatus('Select at least one source.', 'info');
+    piiBtnEl.disabled = false;
+    piiBtnEl.textContent = 'Check';
     return;
   }
 
-  hideStatus();
+  const plainResp = await contentMessage({ type: 'SEARCH', term: email, sources });
 
-  // DataLayer section
-  if (dlHits.length) {
-    const heading = document.createElement('div');
-    heading.className   = 'section-heading';
-    heading.textContent = `DataLayer (${dlHits.length} event${dlHits.length > 1 ? 's' : ''})`;
-    resultsEl.appendChild(heading);
-    dlHits.forEach(hit => resultsEl.appendChild(makeCard(hit, 'dl')));
+  if (!plainResp?.ok) {
+    showPiiStatus('Could not reach the page. Try reloading.', 'error');
+    piiBtnEl.disabled = false;
+    piiBtnEl.textContent = 'Check';
+    return;
   }
 
-  // GA4 Events section
+  const rawHashes = await Promise.all([
+    sha256hex(email),
+    sha256hex(email.toLowerCase()),
+    sha256hex(email.toUpperCase()),
+  ]);
+  const uniqueHashes = [...new Set(rawHashes)];
+
+  const hashDL  = [];
+  const hashGA4 = [];
+  for (const hash of uniqueHashes) {
+    const resp = await contentMessage({ type: 'SEARCH', term: hash, sources });
+    if (resp?.ok) {
+      mergeResults(hashDL,  resp.results?.dataLayer);
+      mergeResults(hashGA4, resp.results?.ga4);
+    }
+  }
+
+  piiBtnEl.disabled    = false;
+  piiBtnEl.textContent = 'Check';
+
+  // Remember the email for next time.
+  chrome.storage.local.set({ [LAST_PII_EMAIL_KEY]: email });
+
+  renderEmailResults(
+    { dataLayer: plainResp?.results?.dataLayer || [], ga4: plainResp?.results?.ga4 || [] },
+    { dataLayer: hashDL, ga4: hashGA4 },
+    email
+  );
+
+  refreshCounts();
+}
+
+// ── Rendering — events ────────────────────────────────────────────────────────
+
+function renderResults({ dataLayer, ga4 }, term) {
+  const dlHits  = dataLayer || [];
+  const ga4Hits = ga4 || [];
+  if (!dlHits.length && !ga4Hits.length) {
+    showStatus(`No matches for "${esc(term)}" in selected sources.`, 'none');
+    return;
+  }
+  hideStatus();
+  if (dlHits.length) {
+    const h = document.createElement('div');
+    h.className = 'section-heading';
+    h.textContent = `DataLayer (${dlHits.length} event${dlHits.length > 1 ? 's' : ''})`;
+    resultsEl.appendChild(h);
+    dlHits.forEach(hit => resultsEl.appendChild(makeCard(hit, 'dl')));
+  }
   if (ga4Hits.length) {
-    const heading = document.createElement('div');
-    heading.className   = 'section-heading';
-    heading.textContent = `GA4 Events (${ga4Hits.length} event${ga4Hits.length > 1 ? 's' : ''})`;
-    resultsEl.appendChild(heading);
+    const h = document.createElement('div');
+    h.className = 'section-heading';
+    h.textContent = `GA4 Events (${ga4Hits.length} event${ga4Hits.length > 1 ? 's' : ''})`;
+    resultsEl.appendChild(h);
     ga4Hits.forEach(hit => resultsEl.appendChild(makeCard(hit, 'ga4')));
   }
 }
 
-/**
- * Builds a collapsible result card DOM element for a single matched event.
- *
- * Card structure:
- *   ┌── result-card ────────────────────────────────────────────┐
- *   │  [header]  event name · MID badge · source badge · time · ▶ │  ← click to toggle
- *   │  [body]    path → value                                    │  ← one row per hit
- *   │            path → value                                    │
- *   └────────────────────────────────────────────────────────────┘
- *
- * Source badge variants:
- *   "dataLayer" (blue)       – GTM dataLayer push
- *   "GA4"       (aquamarine) – GA4 event (gtag() call or network hit)
- *
- * Measurement ID badge (GA4 cards only):
- *   Shown when a Measurement ID was captured from a gtag('config', …) call
- *   or from the `tid` parameter in a network hit. Displays the GA4 property
- *   ID (e.g. G-ABC123XYZ) so you can tell which property the event belongs
- *   to on multi-tag pages.
- *
- * All user-derived strings are HTML-escaped via esc() before insertion.
- *
- * @param {object} hit  - A single result entry from searchDataLayer() or searchGA4().
- * @param {string} type - 'dl' for dataLayer hits, 'ga4' for GA4 hits.
- * @returns {HTMLElement} The card element, ready to append.
- */
+// ── Rendering — email PII ─────────────────────────────────────────────────────
+
+function renderEmailResults(plainResults, hashResults, email) {
+  const plainTotal = plainResults.dataLayer.length + plainResults.ga4.length;
+  const hashTotal  = hashResults.dataLayer.length  + hashResults.ga4.length;
+
+  if (!plainTotal && !hashTotal) {
+    const el = document.createElement('div');
+    el.className   = 'pii-clear-heading';
+    el.textContent = `No plain-text or SHA-256 matches found for ${email}`;
+    piiResultsEl.appendChild(el);
+    return;
+  }
+
+  if (plainTotal) {
+    const h = document.createElement('div');
+    h.className   = 'pii-plain-heading';
+    h.textContent = `Plain text — email exposed (${plainTotal} event${plainTotal > 1 ? 's' : ''})`;
+    piiResultsEl.appendChild(h);
+    plainResults.dataLayer.forEach(hit => piiResultsEl.appendChild(makeCard(hit, 'dl')));
+    plainResults.ga4.forEach(hit       => piiResultsEl.appendChild(makeCard(hit, 'ga4')));
+  }
+
+  if (hashTotal) {
+    const h = document.createElement('div');
+    h.className   = 'pii-hash-heading';
+    h.textContent = `SHA-256 hash found (${hashTotal} event${hashTotal > 1 ? 's' : ''})`;
+    piiResultsEl.appendChild(h);
+    hashResults.dataLayer.forEach(hit => piiResultsEl.appendChild(makeCard(hit, 'dl')));
+    hashResults.ga4.forEach(hit       => piiResultsEl.appendChild(makeCard(hit, 'ga4')));
+  }
+}
+
+// ── Result card ───────────────────────────────────────────────────────────────
+
 function makeCard(hit, type) {
   const card = document.createElement('div');
   card.className = 'result-card';
 
-  // All GA4 events (whether captured via gtag() or network interception) show
-  // a single "GA4" badge — the distinction isn't useful to the end user.
   const sourceLabel = type === 'dl'
     ? '<span class="event-source source-dl">dataLayer</span>'
     : '<span class="event-source source-ga4">GA4</span>';
 
-  // Measurement ID badge — only shown on GA4 cards when an ID is known.
-  // On pages with multiple GA4 properties, the ID helps identify which
-  // property fired the event.
   const midBadge = (type === 'ga4' && hit.measurementId)
     ? `<span class="event-mid" title="GA4 Measurement ID">${esc(hit.measurementId)}</span>`
     : '';
 
-  // Format the capture timestamp as HH:MM:SS for a compact display.
   const time = hit.timestamp
     ? new Date(hit.timestamp).toLocaleTimeString([], { hour12: false })
     : '';
 
-  // Build the card HTML. innerHTML is used for conciseness; all dynamic
-  // values are passed through esc() to prevent XSS from page data.
-  //
-  // The header uses a two-row layout:
-  //   Row 1 (card-header-main):  event name (full width) + chevron
-  //   Row 2 (card-header-meta):  MID badge (if present) + source badge + time
-  //
-  // Keeping the event name on its own row means it is never squeezed by
-  // a long Measurement ID string, regardless of how many IDs are active.
   card.innerHTML = `
     <div class="result-card-header">
       <div class="card-header-main">
@@ -372,100 +336,57 @@ function makeCard(hit, type) {
     </div>
   `;
 
-  // Toggle the card body open/closed when the header is clicked.
   card.querySelector('.result-card-header').addEventListener('click', () => {
     card.classList.toggle('open');
   });
-
-  // Start all cards expanded so the user immediately sees the matched paths.
   card.classList.add('open');
-
   return card;
 }
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 
-/**
- * Displays a status message bar with a given visual style.
- *
- * @param {string} msg  - HTML string to display (safe to pass escaped strings).
- * @param {'info'|'error'|'none'} type - Controls the colour scheme via CSS class.
- */
 function showStatus(msg, type = 'info') {
   statusEl.className = `status ${type}`;
   statusEl.innerHTML = msg;
 }
-
-/** Hides the status bar without removing it from the DOM layout. */
 function hideStatus() {
   statusEl.className   = 'status hidden';
   statusEl.textContent = '';
 }
 
+function showPiiStatus(msg, type = 'info') {
+  piiStatusEl.className = `status ${type}`;
+  piiStatusEl.innerHTML = msg;
+}
+function hidePiiStatus() {
+  piiStatusEl.className   = 'status hidden';
+  piiStatusEl.textContent = '';
+}
+
 // ── Chrome messaging helpers ──────────────────────────────────────────────────
 
-/**
- * Sends a message to the extension service worker (background.js) and returns
- * a Promise that resolves with the response.
- *
- * Wraps the callback-based chrome.runtime.sendMessage in a Promise so it can
- * be awaited. Resolves with null on any error (e.g. no background page).
- *
- * @param {object} msg - Message payload.
- * @returns {Promise<*>}
- */
 function chromeMessage(msg) {
   return new Promise(resolve => {
-    try {
-      chrome.runtime.sendMessage(msg, resp => resolve(resp || null));
-    } catch (_) {
-      resolve(null);
-    }
+    try { chrome.runtime.sendMessage(msg, resp => resolve(resp || null)); }
+    catch (_) { resolve(null); }
   });
 }
 
-/**
- * Sends a message to content.js running in the currently active tab and
- * returns a Promise that resolves with the response.
- *
- * Must query for the active tab first because the popup has no direct
- * reference to which tab it was opened on.
- *
- * Resolves with null if:
- *   • No active tab is found.
- *   • content.js has not loaded (e.g. chrome:// page, extension page).
- *   • chrome.runtime.lastError is set (suppresses uncaught error in console).
- *
- * @param {object} msg - Message payload.
- * @returns {Promise<*>}
- */
 async function contentMessage(msg) {
   return new Promise(resolve => {
     try {
       chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
         const tab = tabs?.[0];
         if (!tab?.id) return resolve(null);
-
         chrome.tabs.sendMessage(tab.id, msg, resp => {
-          // Accessing lastError suppresses the "Could not establish connection"
-          // error that Chrome logs when no listener is present on the other end.
           if (chrome.runtime.lastError) return resolve(null);
           resolve(resp || null);
         });
       });
-    } catch (_) {
-      resolve(null);
-    }
+    } catch (_) { resolve(null); }
   });
 }
 
-/**
- * Escapes a string for safe insertion into innerHTML, preventing XSS from
- * values that originated in the page's own dataLayer or GA4 events.
- *
- * @param {string} str - Raw string to escape.
- * @returns {string} HTML-safe string.
- */
 function esc(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -476,24 +397,21 @@ function esc(str) {
 
 // ── Event listeners ───────────────────────────────────────────────────────────
 
-/** Trigger search when the Search button is clicked. */
 searchBtn.addEventListener('click', runSearch);
+searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
 
-/** Allow the user to submit the search by pressing Enter in the text field. */
-searchInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') runSearch();
-});
+piiBtnEl.addEventListener('click', runEmailCheck);
+piiEmailInput.addEventListener('keydown', e => { if (e.key === 'Enter') runEmailCheck(); });
 
-/**
- * Prevent both checkboxes from being unchecked simultaneously.
- * If the user unchecks one and the other is already unchecked, the one they
- * just clicked is immediately re-checked, maintaining at least one active source.
- */
 [chkDL, chkGA4].forEach(chk => {
   chk.addEventListener('change', () => {
-    if (!chkDL.checked && !chkGA4.checked) {
-      chk.checked = true; // re-check the one the user just unchecked
-    }
+    if (!chkDL.checked && !chkGA4.checked) chk.checked = true;
+  });
+});
+
+[chkPiiDL, chkPiiGA4].forEach(chk => {
+  chk.addEventListener('change', () => {
+    if (!chkPiiDL.checked && !chkPiiGA4.checked) chk.checked = true;
   });
 });
 

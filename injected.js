@@ -125,12 +125,20 @@
   function captureGtagCall(args) {
     try {
       if (args[0] === 'config') {
-        // args[1] is the Measurement ID string (e.g. 'G-ABC123XYZ').
-        // We store all IDs seen on this page so we can label events correctly
-        // even on sites with multiple GA4 properties (dual-tagging setups).
         const id = args[1];
         if (id && typeof id === 'string') {
           MEASUREMENT_IDS.add(id);
+        }
+        // Capture config params (args[2]) — sites pass user data here, e.g.
+        // gtag('config', 'G-XXX', { user_id: '...', user_email: '...' })
+        if (args[2] && typeof args[2] === 'object') {
+          GA4_EVENTS.push({
+            timestamp:     Date.now(),
+            source:        'gtag',
+            eventName:     `config: ${id}`,
+            measurementId: id || null,
+            params:        deepClone(args[2]),
+          });
         }
       }
 
@@ -138,9 +146,22 @@
         GA4_EVENTS.push({
           timestamp:     Date.now(),
           source:        'gtag',
-          eventName:     args[1],                    // e.g. 'purchase', 'view_item'
-          measurementId: [...MEASUREMENT_IDS].join(', ') || null, // all IDs seen so far
-          params:        deepClone(args[2] || {}),   // event parameters object
+          eventName:     args[1],
+          measurementId: [...MEASUREMENT_IDS].join(', ') || null,
+          params:        deepClone(args[2] || {}),
+        });
+      }
+
+      // gtag('set', 'user_data', {...}) — GA4 Enhanced Conversions pathway.
+      // This is how sites pass PII (email, phone, address) for conversion matching.
+      // Previously not captured at all.
+      if (args[0] === 'set' && args[1] === 'user_data' && args[2] && typeof args[2] === 'object') {
+        GA4_EVENTS.push({
+          timestamp:     Date.now(),
+          source:        'gtag',
+          eventName:     'set: user_data',
+          measurementId: [...MEASUREMENT_IDS].join(', ') || null,
+          params:        deepClone(args[2]),
         });
       }
     } catch (_) {}
@@ -368,6 +389,8 @@
 
     const EP_RE           = /^ep\.(.+)$/;
     const EPN_RE          = /^epn\.(.+)$/;
+    const UP_RE           = /^up\.(.+)$/;   // user properties (string)
+    const UPN_RE          = /^upn\.(.+)$/;  // user properties (numeric)
     const ITEM_DOTTED_RE  = /^pr(\d+)\.(.+)$/;  // legacy dotted: pr1.nm=Jacket
     const COMPACT_ITEM_RE = /^pr(\d+)$/;         // modern compact: pr1=id~nm~br~...
 
@@ -379,6 +402,21 @@
 
       const epn = EPN_RE.exec(k);
       if (epn) { structured.params[epn[1]] = isNaN(v) ? v : Number(v); continue; }
+
+      // User properties — stored under a 'user_properties' sub-object so they're
+      // clearly labelled and easily scannable in search results.
+      const up = UP_RE.exec(k);
+      if (up) {
+        if (!structured.params.user_properties) structured.params.user_properties = {};
+        structured.params.user_properties[up[1]] = v;
+        continue;
+      }
+      const upn = UPN_RE.exec(k);
+      if (upn) {
+        if (!structured.params.user_properties) structured.params.user_properties = {};
+        structured.params.user_properties[upn[1]] = isNaN(v) ? v : Number(v);
+        continue;
+      }
 
       // Legacy dotted item format: pr1.nm=Paneled leather jacket
       // Map the short code to its GA4 field name where known.
@@ -523,13 +561,47 @@
     }
   }
 
+  /**
+   * Extracts a string body from any type that a network API might receive —
+   * string, Blob, URLSearchParams, FormData, or ArrayBuffer — and calls
+   * captureGA4Hit once the text is available.
+   *
+   * Blob (the most common GA4 sendBeacon type) is read asynchronously after
+   * the request has already been dispatched, so it never blocks the real hit.
+   *
+   * @param {string} url
+   * @param {*} data
+   */
+  function captureWithBody(url, data) {
+    if (!data) { captureGA4Hit(url, ''); return; }
+    if (typeof data === 'string')             { captureGA4Hit(url, data); return; }
+    if (data instanceof URLSearchParams)      { captureGA4Hit(url, data.toString()); return; }
+    if (data instanceof Blob) {
+      // Read asynchronously — the real request has already been queued.
+      data.text().then(text => captureGA4Hit(url, text)).catch(() => {});
+      return;
+    }
+    if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+      try {
+        captureGA4Hit(url, new TextDecoder().decode(data));
+      } catch (_) {}
+      return;
+    }
+    if (data instanceof FormData) {
+      try { captureGA4Hit(url, new URLSearchParams(data).toString()); } catch (_) {}
+      return;
+    }
+    // Fallback — may produce "[object X]" for unknown types, but at least
+    // won't silently swallow the attempt.
+    captureGA4Hit(url, String(data));
+  }
+
   // ── fetch override ────────────────────────────────────────────────────────
   const _fetch = window.fetch;
   window.fetch = function (input, init) {
     try {
-      const url  = typeof input === 'string' ? input : (input?.url || '');
-      const body = init?.body ? String(init.body) : '';
-      captureGA4Hit(url, body);
+      const url = typeof input === 'string' ? input : (input?.url || '');
+      captureWithBody(url, init?.body);
     } catch (_) {}
     return _fetch.apply(this, arguments);
   };
@@ -546,15 +618,16 @@
   };
 
   XMLHttpRequest.prototype.send = function (body) {
-    try { captureGA4Hit(this.__dli_url || '', body ? String(body) : ''); } catch (_) {}
+    try { captureWithBody(this.__dli_url || '', body); } catch (_) {}
     return _XHRSend.apply(this, arguments);
   };
 
   // ── sendBeacon override ───────────────────────────────────────────────────
   // The most common transport for GA4 hits — fires reliably on page unload.
+  // GA4's gtag.js sends Blob bodies; captureWithBody handles these asynchronously.
   const _sendBeacon = navigator.sendBeacon.bind(navigator);
   navigator.sendBeacon = function (url, data) {
-    try { captureGA4Hit(url, data ? String(data) : ''); } catch (_) {}
+    try { captureWithBody(url, data); } catch (_) {}
     return _sendBeacon(url, data);
   };
 
@@ -575,7 +648,7 @@
    * @param {string} path - Accumulated key path (empty string at root).
    * @returns {Array<{path: string, value: *}>}
    */
-  function findPaths(obj, term, path) {
+  function findPaths(obj, term, path, _seen) {
     const hits = [];
     if (obj === null || obj === undefined) return hits;
     const t = term.toLowerCase();
@@ -588,14 +661,18 @@
       if (String(obj).toLowerCase().includes(t)) hits.push({ path, value: obj });
       return hits;
     }
-    if (Array.isArray(obj)) {
-      obj.forEach((v, i) => hits.push(...findPaths(v, term, `${path}[${i}]`)));
-      return hits;
-    }
     if (typeof obj === 'object') {
-      Object.entries(obj).forEach(([k, v]) => {
-        hits.push(...findPaths(v, term, path ? `${path}.${k}` : k));
-      });
+      const seen = _seen || new WeakSet();
+      if (seen.has(obj)) return hits; // circular reference — skip
+      seen.add(obj);
+
+      if (Array.isArray(obj)) {
+        obj.forEach((v, i) => hits.push(...findPaths(v, term, `${path}[${i}]`, seen)));
+      } else {
+        Object.entries(obj).forEach(([k, v]) => {
+          hits.push(...findPaths(v, term, path ? `${path}.${k}` : k, seen));
+        });
+      }
     }
     return hits;
   }
@@ -662,12 +739,16 @@
    * Responds with: { id, dataLayer: Array|null, ga4: Array|null }
    */
   window.addEventListener('__dli_request__', e => {
+    if (!e.detail) return;
     const { id, term, sources } = e.detail;
     const response = { id, dataLayer: null, ga4: null };
 
-    if (sources.includes('dataLayer')) response.dataLayer = searchDataLayer(term);
-    if (sources.includes('ga4'))       response.ga4       = searchGA4(term);
+    try {
+      if (sources.includes('dataLayer')) response.dataLayer = searchDataLayer(term);
+      if (sources.includes('ga4'))       response.ga4       = searchGA4(term);
+    } catch (_) {}
 
+    // Always dispatch — even on error — so content.js's Promise never hangs.
     window.dispatchEvent(new CustomEvent('__dli_response__', { detail: response }));
   });
 

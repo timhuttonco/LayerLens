@@ -130,6 +130,90 @@ body {
   flex-shrink: 0;
 }
 
+/* ── Tab bar ────────────────────────────────────────────────────────────────── */
+
+.tab-bar {
+  display: flex;
+  background: #f6f9fc;
+  border-bottom: 2px solid #d4e4f0;
+  flex-shrink: 0;
+}
+
+.tab {
+  flex: 1;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  color: #4a7090;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  font-family: inherit;
+}
+.tab:hover { color: #1a3a5c; }
+.tab.active {
+  color: #1a3a5c;
+  border-bottom-color: #1a3a5c;
+  font-weight: 600;
+}
+
+/* ── Tab panels ─────────────────────────────────────────────────────────────── */
+
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+.tab-panel[hidden] { display: none; }
+
+/* ── PII result section headings (inside #pii-results) ──────────────────────── */
+
+.pii-plain-heading {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #b91c1c;
+  margin: 10px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.pii-plain-heading::before { content: '⚠'; font-size: 11px; }
+
+.pii-hash-heading {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #b45309;
+  margin: 10px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.pii-hash-heading::before { content: '⚠'; font-size: 11px; }
+
+.pii-clear-heading {
+  font-size: 11px;
+  font-weight: 600;
+  color: #166534;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 10px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pii-clear-heading::before { content: '✓'; font-weight: 700; }
+
 /* ── Settings row ───────────────────────────────────────────────────────────── */
 
 /* Thin strip between the sources row and the search bar. */
@@ -232,7 +316,8 @@ body {
   background: #f6f9fc;
 }
 
-#search-input {
+#search-input,
+#pii-email {
   flex: 1;
   padding: 7px 10px;
   background: #ffffff;
@@ -244,11 +329,13 @@ body {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 /* Aquamarine focus ring to match the accent colour */
-#search-input:focus {
+#search-input:focus,
+#pii-email:focus {
   border-color: #0d9488;
   box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.15);
 }
-#search-input::placeholder { color: #90aec0; }
+#search-input::placeholder,
+#pii-email::placeholder { color: #90aec0; }
 
 /* Primary button — navy bg with white text */
 .btn-primary {

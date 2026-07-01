@@ -129,14 +129,27 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
  */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
-  // ── In-page tooltip button clicked ───────────────────────────────────────
+  // ── In-page tooltip — regular term ──────────────────────────────────────
   if (msg.type === 'OPEN_POPUP_WITH_TERM') {
     const tabId = sender.tab?.id;
-    if (msg.term && tabId) {
-      queueSearchAndOpenPopup(msg.term, tabId);
+    if (msg.term && tabId) queueSearchAndOpenPopup(msg.term, tabId);
+    sendResponse({ ok: true });
+    return;
+  }
+
+  // ── In-page tooltip — email address detected ─────────────────────────────
+  // Stores the email separately so popup.js knows to open the Email PII tab
+  // and run both the events search and the email check simultaneously.
+  if (msg.type === 'OPEN_POPUP_WITH_EMAIL') {
+    const tabId = sender.tab?.id;
+    if (msg.email && tabId) {
+      chrome.storage.session.set({ pendingSearch: { email: msg.email, tabId } });
+      chrome.action.openPopup?.().catch(() => {
+        chrome.action.setBadgeText({ text: '!', tabId });
+        chrome.action.setBadgeBackgroundColor({ color: '#4f46e5', tabId });
+      });
     }
     sendResponse({ ok: true });
-    // Synchronous — no `return true` needed (sendResponse called immediately).
     return;
   }
 
